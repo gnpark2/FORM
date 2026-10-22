@@ -1,0 +1,7 @@
+.local
+.wrangler
+.sites-runtime
+.env*
+.dev.vars*
+dist
+.openai
