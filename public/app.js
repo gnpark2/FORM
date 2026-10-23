@@ -7,10 +7,10 @@ import {categories,samples,backgrounds,placements,blankBoard,sampleBoard,validBo
 import {validState as validLegacy} from './catalog.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],clone=x=>structuredClone(x);
 let state=sampleBoard(),garments=[],saved=[],activeKey=state.pieces[0].key,filter='all',screen='studio',loaded=false,userId='',toastTimer;
-let pendingLook=null,uploadData=null,pendingGarment=null,uploading=false,saving=false,legacy=[],photoLoad=0;
+let pendingLook=null,uploadData=null,pendingGarment=null,uploading=false,editingPhoto=false,saving=false,legacy=[],photoLoad=0;
 addFeatureFields();
 const imageCache=new Map();
-const photoEditor=createPhotoEditor({onChange:data=>{uploadData=data;pendingGarment=null;$('#uploadError').textContent='';},onError:message=>{uploadData=null;$('#uploadError').textContent=message;}});
+const photoEditor=createPhotoEditor({onChange:data=>{uploadData=data;pendingGarment=null;$('#uploadError').textContent='';},onError:message=>{uploadData=null;$('#uploadError').textContent=message;},onBusy:busy=>{editingPhoto=busy;$('#uploadSubmit').disabled=busy||uploading;}});
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),3500)}
 function imageFor(piece){return resolvePiece(piece,garments)}
 function loadImage(src){if(!imageCache.has(src)){imageCache.set(src,new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>{imageCache.delete(src);reject(new Error('사진을 불러오지 못했어요. 연결을 확인한 뒤 다시 시도해 주세요.'))};img.src=src;}));}return imageCache.get(src);}
@@ -71,18 +71,33 @@ function addItem(item){
 }
 function removeSelected(){if(!selected())return;state.pieces=state.pieces.filter(p=>p.key!==activeKey);activeKey=state.pieces.at(-1)?.key||null;renderBoard();renderWardrobe();changed();}
 function installBoard(board){state=clone(board);activeKey=state.pieces[0]?.key||null;renderBoard();renderWardrobe();}
-function showScreen(which){screen=which;$('#studio').hidden=which!=='studio';$('#savedPage').hidden=which!=='saved';$('#closetPage').hidden=which!=='closet';$('#closetTab').classList.toggle('active',which==='closet');if(which==='closet')closet.render();$('#studioTab').classList.toggle('active',which==='studio');$('#savedTab').classList.toggle('active',which==='saved');if(which==='saved')renderSaved();window.scrollTo({top:0,behavior:'instant'});}
+function showScreen(which){if(!loaded)return;screen=which;$('#studio').hidden=which!=='studio';$('#savedPage').hidden=which!=='saved';$('#closetPage').hidden=which!=='closet';$('#closetTab').classList.toggle('active',which==='closet');if(which==='closet')closet.render();$('#studioTab').classList.toggle('active',which==='studio');$('#savedTab').classList.toggle('active',which==='saved');if(which==='saved')renderSaved();window.scrollTo({top:0,behavior:'instant'});}
 function renderSaved(){
  $('#saveCount').textContent=saved.length;const root=$('#savedGrid');root.replaceChildren();$('#emptySaved').hidden=saved.length>0;
  saved.forEach(look=>{const board=validBoard(look.state);const card=document.createElement('article');card.className='saved-card';if(look.image){const img=document.createElement('img');img.src=look.image;img.alt=look.name+' 미리보기';img.loading='lazy';card.append(img);}const info=document.createElement('div');info.className='saved-info';const title=document.createElement('h3');title.textContent=look.name;const caption=document.createElement('p');caption.textContent=board?look.state.pieces.length+'장의 사진 · '+new Date(look.createdAt).toLocaleDateString('ko-KR'):'이전 버전 코디 · 원본 기록 보관';const actions=document.createElement('div');actions.className='saved-actions';if(board){const load=document.createElement('button');load.className='btn primary';load.textContent='보드 불러오기';load.onclick=()=>{installBoard(look.state);changed();showScreen('studio');toast('저장한 사진과 배치를 불러왔어요.')};actions.append(load);}const del=document.createElement('button');del.className='btn danger saved-delete';del.textContent='코디 삭제';del.onclick=async()=>{if(!confirm(`“${look.name}” 코디를 삭제할까요? 저장한 배치와 미리보기는 복원할 수 없습니다. 옷장 사진은 유지됩니다.`))return;del.disabled=true;try{await api('/api/looks/'+look.id,{method:'DELETE'});saved=saved.filter(x=>x.id!==look.id);renderSaved();toast('저장한 코디를 삭제했어요. 옷장은 유지됩니다.');}catch(e){del.disabled=false;toast(e.message)}};info.append(title,caption,actions);card.append(del,info);root.append(card);});
 }
 async function refreshLibrary(){if(!loaded)return;const data=await api('/api/library');if(data.userId!==userId){location.reload();return;}garments=data.garments||[];saved=data.looks;renderSaved();renderWardrobe();}
-async function connectCloud(){
- $('#cloudStatus').textContent='내 옷장을 불러오는 중…';$('#cloudRetry').hidden=true;
- try{await connectAccount(async()=>{if(uploading||saving||closet.busy)throw new Error('진행 중인 저장을 마친 뒤 로그아웃해 주세요.');await cloud.flush();if(cloud.dirty)throw new Error('저장을 완료한 뒤 로그아웃해 주세요.');});const data=await api('/api/library');userId=data.userId;garments=data.garments||[];saved=data.looks;cloud.revision=data.revision;if(validBoard(data.draft))installBoard(data.draft);else installBoard(sampleBoard());renderSaved();cloud.enabled=true;loaded=true;$('#studio').inert=false;$('#savedPage').inert=false;$('#closetPage').inert=false;$('#cloudStatus').textContent='내 계정에 연결됨 · 배치 자동 저장';$('#cloudLogin').hidden=true;
-  try{const old=JSON.parse(localStorage.getItem('form-looks-v1')||'[]');legacy=Array.isArray(old)?old.filter(l=>typeof l.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(l.id)&&typeof l.name==='string'&&validLegacy(l.state)):[];$('#importLegacy').hidden=!legacy.length||!!localStorage.getItem('form-migrated-'+userId);}catch{}
- }catch(e){$('#cloudStatus').textContent=e.message;$('#cloudRetry').hidden=false;$('#cloudLogin').hidden=e.status!==401;}
+function showSession(view, message='') {
+ document.body.dataset.session=view;
+ $('#sessionGate').hidden=view!=='checking';
+ $('#welcome').hidden=view!=='guest';
+ $('#appShell').hidden=view!=='member';
+ $('#welcomeStatus').hidden=!message;
+ $('#welcomeStatus').textContent=message;
+ $('#welcomeRetry').hidden=view!=='guest'||!message;
+ if(view==='member')requestAnimationFrame(()=>boardControls.sync());
 }
+let connecting=false;
+async function connectCloud(){
+ if(connecting)return;connecting=true;
+ showSession('checking');
+ $('#cloudStatus').textContent='내 옷장을 불러오는 중…';$('#cloudRetry').hidden=true;
+ try{await connectAccount(async()=>{if(uploading||editingPhoto||saving||closet.busy)throw new Error('진행 중인 저장을 마친 뒤 로그아웃해 주세요.');await cloud.flush();if(cloud.dirty)throw new Error('저장을 완료한 뒤 로그아웃해 주세요.');});const data=await api('/api/library');userId=data.userId;garments=data.garments||[];saved=data.looks;cloud.revision=data.revision;if(validBoard(data.draft))installBoard(data.draft);else installBoard(sampleBoard());renderSaved();cloud.enabled=true;loaded=true;$('#studio').inert=false;$('#savedPage').inert=false;$('#closetPage').inert=false;$('#cloudStatus').textContent='내 계정에 연결됨 · 배치 자동 저장';$('#cloudLogin').hidden=true;showSession('member');
+  try{const old=JSON.parse(localStorage.getItem('form-looks-v1')||'[]');legacy=Array.isArray(old)?old.filter(l=>typeof l.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(l.id)&&typeof l.name==='string'&&validLegacy(l.state)):[];$('#importLegacy').hidden=!legacy.length||!!localStorage.getItem('form-migrated-'+userId);}catch{}
+ }catch(e){$('#cloudStatus').textContent=e.message;$('#cloudRetry').hidden=false;$('#cloudLogin').hidden=e.status!==401;showSession('guest',e.status===401&&!new URL(location.href).searchParams.has('auth_error')?'':e.message);}
+ finally{connecting=false;}
+}
+$('#welcomeRetry').onclick=connectCloud;
 async function capture(board=state){
  const canvas=document.createElement('canvas');canvas.width=900;canvas.height=1140;const ctx=canvas.getContext('2d');ctx.fillStyle=board.background;ctx.fillRect(0,0,900,1140);
  for(const p of board.pieces){const item=imageFor(p);if(!item)throw new Error('등록한 사진을 찾을 수 없어요. 새로고침 후 다시 시도해 주세요.');const img=await loadImage(item.image),w=p.width/100*900,h=w*img.naturalHeight/img.naturalWidth;ctx.save();ctx.translate(p.x/100*900,p.y/100*1140);ctx.rotate(p.rotation*Math.PI/180);ctx.drawImage(img,-w/2,-h/2,w,h);ctx.restore();}
@@ -100,7 +115,7 @@ $('#photoFile').onchange=async e=>{
  }catch(error){if(request===photoLoad)$('#uploadError').textContent=error.message||'사진을 읽지 못했어요.';}finally{if(request===photoLoad)$('#uploadSubmit').disabled=false;}
 };
 $('#uploadForm').onsubmit=async e=>{
- e.preventDefault();if(uploading)return;if(!uploadData){$('#uploadError').textContent='사진을 먼저 선택해 주세요.';return;}
+ e.preventDefault();if(uploading||editingPhoto)return;if(!uploadData){$('#uploadError').textContent='사진을 먼저 선택해 주세요.';return;}
  pendingGarment??={id:crypto.randomUUID(),name:$('#garmentName').value.trim(),category:$('#garmentCategory').value,sourceUrl:$('#garmentUrl').value.trim(),features:$('#garmentFeatures').value.trim(),image:uploadData};uploading=true;photoEditor.setLocked(true);formBusy(e.currentTarget,true);$('#uploadError').textContent='';$('#uploadSubmit').textContent='사진을 서버에 저장 중…';
  try{const data=await api('/api/garments/'+pendingGarment.id,{method:'PUT',body:JSON.stringify(pendingGarment)});garments=[data.garment,...garments.filter(x=>x.id!==data.garment.id)];filter=data.garment.category;renderWardrobe();const add=$('#addAfterUpload').checked;if(add)addItem(data.garment);closet.focusCategory(data.garment.category);$('#uploadDialog').close();pendingGarment=null;toast(add?'내 옷장에 등록하고 보드에 놓았어요.':'선택한 분류에 옷 사진을 저장했어요.');}catch(e){$('#uploadError').textContent=e.message;}finally{uploading=false;formBusy($('#uploadForm'),false);photoEditor.setLocked(false);$('#uploadSubmit').textContent='내 옷장에 등록';}
 };
@@ -112,6 +127,7 @@ $('#saveForm').onsubmit=async e=>{
 };
 $('#lookName').oninput=()=>pendingLook=null;
 $('#saveDialog').oncancel=e=>{if(saving)e.preventDefault()};$('#uploadDialog').oncancel=e=>{if(uploading)e.preventDefault()};
+$('#uploadDialog').addEventListener('close',()=>photoEditor.cancelBackground());
 $$('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
 $('#uploadOpen').onclick=openUpload;$('#uploadMain').onclick=openUpload;
 $('#sizeRange').oninput=e=>{const p=selected();if(!p)return;p.width=Number(e.target.value);positionElement($('#pieces [data-key="'+p.key+'"]'),p);renderSelection();changed()};
