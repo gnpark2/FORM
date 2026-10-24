@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start --port 5173",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "check": "node --check public/app.js && node --check public/cloud-store.js && node --check server/storage.js && node --check public/board-state.js && node --check public/closet.js && node --check public/photo-editor.js && node --check public/board-controls.js && node --check server/auth.js && node --check server/recommend.js && node --check public/recommend-ui.js && node --check server/runtime.js && node --check server/database.js && node --check public/background-remover.js && node --check public/background-worker.js",
+    "check": "node --check public/app.js && node --check public/cloud-store.js && node --check server/storage.js && node --check public/board-state.js && node --check public/closet.js && node --check public/photo-editor.js && node --check public/board-controls.js && node --check server/auth.js && node --check server/recommend.js && node --check public/recommend-ui.js && node --check server/runtime.js && node --check server/database.js && node --check public/background-remover.js && node --check public/background-worker.js && node --check public/subcategories.js && node --check server/subcategories.js",
     "test": "node --test tests/*.test.js",
     "db:migrate": "node scripts/migrate-supabase.mjs",
     "check:env": "node scripts/check-env.mjs"

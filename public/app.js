@@ -1,3 +1,4 @@
+import {createSubcategories,matchesSubcategory} from './subcategories.js';
 import {addFeatureFields,connectAccount,createRecommender} from './recommend-ui.js';
 import {createBoardControls} from './board-controls.js';
 import {createPhotoEditor} from './photo-editor.js';
@@ -6,9 +7,11 @@ import {api,CloudDraft} from './cloud-store.js';
 import {categories,samples,backgrounds,placements,blankBoard,sampleBoard,validBoard,resolvePiece} from './board-state.js';
 import {validState as validLegacy} from './catalog.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],clone=x=>structuredClone(x);
-let state=sampleBoard(),garments=[],saved=[],activeKey=state.pieces[0].key,filter='all',screen='studio',loaded=false,userId='',toastTimer;
+let state=sampleBoard(),garments=[],saved=[],activeKey=state.pieces[0].key,lastSelectedKey=activeKey,filter='all',subcategoryFilter='',screen='studio',loaded=false,userId='',toastTimer;
 let pendingLook=null,uploadData=null,pendingGarment=null,uploading=false,editingPhoto=false,saving=false,legacy=[],photoLoad=0;
 addFeatureFields();
+const subcategories=createSubcategories({toast,onChange:()=>{pendingGarment=null;renderWardrobe();},onDelete:id=>{garments=garments.map(g=>({...g,subcategories:(g.subcategories||[]).filter(x=>x!==id)}));}});
+const uploadSubcategories=subcategories.picker($('#garmentCategory'),()=>pendingGarment=null);
 const imageCache=new Map();
 const photoEditor=createPhotoEditor({onChange:data=>{uploadData=data;pendingGarment=null;$('#uploadError').textContent='';},onError:message=>{uploadData=null;$('#uploadError').textContent=message;},onBusy:busy=>{editingPhoto=busy;$('#uploadSubmit').disabled=busy||uploading;}});
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),3500)}
@@ -37,8 +40,10 @@ function renderBoard(){
  $('#boardEmpty').hidden=state.pieces.length>0;$('#pieceCount').textContent=String(state.pieces.length).padStart(2,'0')+' PIECES';
  boardControls.sync();renderSelection();renderOutfit();renderBackgrounds();
 }
-function selectPiece(key){activeKey=key;$$('.piece').forEach(el=>{el.classList.toggle('active',el.dataset.key===key);el.setAttribute('aria-pressed',String(el.dataset.key===key));});boardControls.sync();renderSelection();}
+function selectPiece(key){if(key)lastSelectedKey=key;activeKey=key;$$('.piece').forEach(el=>{el.classList.toggle('active',el.dataset.key===key);el.setAttribute('aria-pressed',String(el.dataset.key===key));});boardControls.sync();renderSelection();}
 function renderSelection(){
+ const anchor=state.pieces.find(p=>p.key===(activeKey||lastSelectedKey));
+ if($('#recommendAnchorName'))$('#recommendAnchorName').textContent=anchor?.source==='wardrobe'?' · '+(imageFor(anchor)?.name||''):'';
  const p=selected(),item=p&&imageFor(p);$('#selectionEmpty').hidden=!!item;$('#selectionControls').hidden=!item;if(!item)return;
  $('#selectedImage').src=item.image;$('#selectedImage').alt=item.name;$('#selectedName').textContent=item.name;$('#selectedCategory').textContent=categories[p.category];$('#sizeRange').value=p.width;$('#sizeValue').textContent=Math.round(p.width)+'%';$('#rotateRange').value=p.rotation;$('#rotateValue').textContent=Math.round(p.rotation)+'°';
  $('#productLink').hidden=!item.sourceUrl;if(item.sourceUrl)$('#productLink').href=item.sourceUrl;else $('#productLink').removeAttribute('href');
@@ -46,7 +51,8 @@ function renderSelection(){
 function renderOutfit(){const root=$('#outfitList');root.replaceChildren();for(const p of state.pieces){const item=imageFor(p);if(!item)continue;const b=document.createElement('button');b.className='outfit-row';const img=document.createElement('img');img.src=item.image;img.alt='';const info=document.createElement('span'),small=document.createElement('small');small.textContent=categories[p.category];info.append(small,document.createTextNode(item.name));b.append(img,info);b.onclick=()=>selectPiece(p.key);root.append(b);}}
 function renderBackgrounds(){const root=$('#backgrounds');root.replaceChildren();backgrounds.forEach((color,i)=>{const b=document.createElement('button');b.style.background=color;b.className=color===state.background?'active':'';b.setAttribute('aria-label',['크림','화이트','세이지','웜 그레이'][i]+' 배경');b.setAttribute('aria-pressed',String(color===state.background));b.onclick=()=>{state.background=color;renderBoard();changed()};root.append(b);});}
 function renderWardrobe(){
- const root=$('#wardrobeGrid');root.replaceChildren();const items=[...garments.filter(g=>!g.archived),...samples].filter(g=>filter==='all'||g.category===filter);$('#wardrobeCount').textContent=garments.filter(g=>!g.archived).length;$('#noItems').hidden=items.length>0;
+ subcategoryFilter=subcategories.filter($('#wardrobeSubcategories'),filter,subcategoryFilter,id=>{subcategoryFilter=id;renderWardrobe();});
+ const root=$('#wardrobeGrid');root.replaceChildren();const items=[...garments.filter(g=>!g.archived),...samples].filter(g=>(filter==='all'||g.category===filter)&&matchesSubcategory(g,subcategoryFilter));$('#wardrobeCount').textContent=garments.filter(g=>!g.archived).length;$('#noItems').hidden=items.length>0;
  items.forEach(item=>{
   const checked=state.pieces.some(p=>p.itemId===item.id&&p.source===item.source);
   const card=document.createElement('div');card.className='item-card';
@@ -54,7 +60,7 @@ function renderWardrobe(){
   const visual=document.createElement('div');visual.className='item-photo';const img=document.createElement('img');img.src=item.image;img.alt=item.name;img.loading='lazy';visual.append(img);b.append(visual);b.onclick=()=>{if(checked)removeWardrobeItem(item);else addItem(item);};
   const caption=document.createElement('div');caption.className='item-caption';const name=document.createElement('span');name.className='item-name';name.textContent=item.name;name.title=item.name;
   caption.append(name);
-  const meta=document.createElement('small');meta.className='item-meta';meta.textContent=item.source==='sample'?'AI SAMPLE':categories[item.category];card.append(b,caption,meta);root.append(card);
+  const meta=document.createElement('small');meta.className='item-meta';meta.textContent=item.source==='sample'?'AI SAMPLE':[categories[item.category],subcategories.labels(item)].filter(Boolean).join(' · ');card.append(b,caption,meta);root.append(card);
  });
  $$('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===filter));closet.render();
 }
@@ -67,16 +73,16 @@ function addItem(item){
  const existing=state.pieces.find(p=>p.itemId===item.id&&p.source===item.source);if(existing){selectPiece(existing.key);return;}
  if(state.pieces.length>=12){toast('한 보드에는 사진을 최대 12개까지 놓을 수 있어요.');return;}
  const offset=state.pieces.filter(p=>p.category===item.category).length*4;
- const p={key:crypto.randomUUID(),source:item.source,itemId:item.id,category:item.category,...placements[item.category]};p.x=Math.min(90,p.x+offset);p.y=Math.min(90,p.y+offset);state.pieces.push(p);activeKey=p.key;renderBoard();renderWardrobe();changed();
+ const p={key:crypto.randomUUID(),source:item.source,itemId:item.id,category:item.category,...placements[item.category]};p.x=Math.min(90,p.x+offset);p.y=Math.min(90,p.y+offset);state.pieces.push(p);activeKey=p.key;lastSelectedKey=p.key;renderBoard();renderWardrobe();changed();
 }
 function removeSelected(){if(!selected())return;state.pieces=state.pieces.filter(p=>p.key!==activeKey);activeKey=state.pieces.at(-1)?.key||null;renderBoard();renderWardrobe();changed();}
-function installBoard(board){state=clone(board);activeKey=state.pieces[0]?.key||null;renderBoard();renderWardrobe();}
+function installBoard(board){state=clone(board);activeKey=state.pieces[0]?.key||null;lastSelectedKey=activeKey;renderBoard();renderWardrobe();}
 function showScreen(which){if(!loaded)return;screen=which;$('#studio').hidden=which!=='studio';$('#savedPage').hidden=which!=='saved';$('#closetPage').hidden=which!=='closet';$('#closetTab').classList.toggle('active',which==='closet');if(which==='closet')closet.render();$('#studioTab').classList.toggle('active',which==='studio');$('#savedTab').classList.toggle('active',which==='saved');if(which==='saved')renderSaved();window.scrollTo({top:0,behavior:'instant'});}
 function renderSaved(){
  $('#saveCount').textContent=saved.length;const root=$('#savedGrid');root.replaceChildren();$('#emptySaved').hidden=saved.length>0;
  saved.forEach(look=>{const board=validBoard(look.state);const card=document.createElement('article');card.className='saved-card';if(look.image){const img=document.createElement('img');img.src=look.image;img.alt=look.name+' 미리보기';img.loading='lazy';card.append(img);}const info=document.createElement('div');info.className='saved-info';const title=document.createElement('h3');title.textContent=look.name;const caption=document.createElement('p');caption.textContent=board?look.state.pieces.length+'장의 사진 · '+new Date(look.createdAt).toLocaleDateString('ko-KR'):'이전 버전 코디 · 원본 기록 보관';const actions=document.createElement('div');actions.className='saved-actions';if(board){const load=document.createElement('button');load.className='btn primary';load.textContent='보드 불러오기';load.onclick=()=>{installBoard(look.state);changed();showScreen('studio');toast('저장한 사진과 배치를 불러왔어요.')};actions.append(load);}const del=document.createElement('button');del.className='btn danger saved-delete';del.textContent='코디 삭제';del.onclick=async()=>{if(!confirm(`“${look.name}” 코디를 삭제할까요? 저장한 배치와 미리보기는 복원할 수 없습니다. 옷장 사진은 유지됩니다.`))return;del.disabled=true;try{await api('/api/looks/'+look.id,{method:'DELETE'});saved=saved.filter(x=>x.id!==look.id);renderSaved();toast('저장한 코디를 삭제했어요. 옷장은 유지됩니다.');}catch(e){del.disabled=false;toast(e.message)}};info.append(title,caption,actions);card.append(del,info);root.append(card);});
 }
-async function refreshLibrary(){if(!loaded)return;const data=await api('/api/library');if(data.userId!==userId){location.reload();return;}garments=data.garments||[];saved=data.looks;renderSaved();renderWardrobe();}
+async function refreshLibrary(){if(!loaded)return;const data=await api('/api/library');if(data.userId!==userId){location.reload();return;}garments=data.garments||[];subcategories.setCatalog(data.subcategories);saved=data.looks;renderSaved();renderWardrobe();}
 function showSession(view, message='') {
  document.body.dataset.session=view;
  $('#sessionGate').hidden=view!=='checking';
@@ -92,7 +98,7 @@ async function connectCloud(){
  if(connecting)return;connecting=true;
  showSession('checking');
  $('#cloudStatus').textContent='내 옷장을 불러오는 중…';$('#cloudRetry').hidden=true;
- try{await connectAccount(async()=>{if(uploading||editingPhoto||saving||closet.busy)throw new Error('진행 중인 저장을 마친 뒤 로그아웃해 주세요.');await cloud.flush();if(cloud.dirty)throw new Error('저장을 완료한 뒤 로그아웃해 주세요.');});const data=await api('/api/library');userId=data.userId;garments=data.garments||[];saved=data.looks;cloud.revision=data.revision;if(validBoard(data.draft))installBoard(data.draft);else installBoard(sampleBoard());renderSaved();cloud.enabled=true;loaded=true;$('#studio').inert=false;$('#savedPage').inert=false;$('#closetPage').inert=false;$('#cloudStatus').textContent='내 계정에 연결됨 · 배치 자동 저장';$('#cloudLogin').hidden=true;showSession('member');
+ try{await connectAccount(async()=>{if(uploading||editingPhoto||saving||closet.busy||subcategories.busy)throw new Error('진행 중인 저장을 마친 뒤 로그아웃해 주세요.');await cloud.flush();if(cloud.dirty)throw new Error('저장을 완료한 뒤 로그아웃해 주세요.');});const data=await api('/api/library');userId=data.userId;garments=data.garments||[];subcategories.setCatalog(data.subcategories);saved=data.looks;cloud.revision=data.revision;if(validBoard(data.draft))installBoard(data.draft);else installBoard(sampleBoard());renderSaved();cloud.enabled=true;loaded=true;$('#studio').inert=false;$('#savedPage').inert=false;$('#closetPage').inert=false;$('#cloudStatus').textContent='내 계정에 연결됨 · 배치 자동 저장';$('#cloudLogin').hidden=true;showSession('member');
   try{const old=JSON.parse(localStorage.getItem('form-looks-v1')||'[]');legacy=Array.isArray(old)?old.filter(l=>typeof l.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(l.id)&&typeof l.name==='string'&&validLegacy(l.state)):[];$('#importLegacy').hidden=!legacy.length||!!localStorage.getItem('form-migrated-'+userId);}catch{}
  }catch(e){$('#cloudStatus').textContent=e.message;$('#cloudRetry').hidden=false;$('#cloudLogin').hidden=e.status!==401;showSession('guest',e.status===401&&!new URL(location.href).searchParams.has('auth_error')?'':e.message);}
  finally{connecting=false;}
@@ -105,7 +111,7 @@ async function capture(board=state){
  let image=canvas.toDataURL('image/jpeg',.82);if(image.length>1050000)image=canvas.toDataURL('image/jpeg',.65);return image;
 }
 function formBusy(form,busy){form.querySelectorAll('input,select,button').forEach(e=>e.disabled=busy);}
-function openUpload({category=filter==='all'?'top':filter,addToBoard=screen==='studio'}={}){if(uploading)return;$('#uploadForm').reset();photoLoad++;photoEditor.clear();uploadData=null;pendingGarment=null;$('#uploadPreview').hidden=true;$('#filePrompt').hidden=false;$('#filePrompt').textContent='＋ 사진 선택 · JPG / PNG / WebP';$('#uploadError').textContent='';$('#garmentCategory').value=category;$('#addAfterUpload').checked=addToBoard;$('#uploadDialog').showModal();}
+function openUpload({category=filter==='all'?'top':filter,addToBoard=screen==='studio'}={}){if(uploading)return;$('#uploadForm').reset();photoLoad++;photoEditor.clear();uploadData=null;pendingGarment=null;$('#uploadPreview').hidden=true;$('#filePrompt').hidden=false;$('#filePrompt').textContent='＋ 사진 선택 · JPG / PNG / WebP';$('#uploadError').textContent='';$('#garmentCategory').value=category;uploadSubcategories.set();$('#addAfterUpload').checked=addToBoard;$('#uploadDialog').showModal();}
 $('#photoFile').onchange=async e=>{
  const request=++photoLoad;uploadData=null;pendingGarment=null;photoEditor.clear();$('#uploadError').textContent='';$('#uploadPreview').hidden=true;$('#filePrompt').hidden=false;const file=e.target.files[0];if(!file)return;
  if(file.size>10*1024*1024||!['image/jpeg','image/png','image/webp'].includes(file.type)){$('#uploadError').textContent='10MB 이하의 JPG, PNG, WebP 사진을 선택해 주세요.';return;}
@@ -115,9 +121,9 @@ $('#photoFile').onchange=async e=>{
  }catch(error){if(request===photoLoad)$('#uploadError').textContent=error.message||'사진을 읽지 못했어요.';}finally{if(request===photoLoad)$('#uploadSubmit').disabled=false;}
 };
 $('#uploadForm').onsubmit=async e=>{
- e.preventDefault();if(uploading||editingPhoto)return;if(!uploadData){$('#uploadError').textContent='사진을 먼저 선택해 주세요.';return;}
- pendingGarment??={id:crypto.randomUUID(),name:$('#garmentName').value.trim(),category:$('#garmentCategory').value,sourceUrl:$('#garmentUrl').value.trim(),features:$('#garmentFeatures').value.trim(),image:uploadData};uploading=true;photoEditor.setLocked(true);formBusy(e.currentTarget,true);$('#uploadError').textContent='';$('#uploadSubmit').textContent='사진을 서버에 저장 중…';
- try{const data=await api('/api/garments/'+pendingGarment.id,{method:'PUT',body:JSON.stringify(pendingGarment)});garments=[data.garment,...garments.filter(x=>x.id!==data.garment.id)];filter=data.garment.category;renderWardrobe();const add=$('#addAfterUpload').checked;if(add)addItem(data.garment);closet.focusCategory(data.garment.category);$('#uploadDialog').close();pendingGarment=null;toast(add?'내 옷장에 등록하고 보드에 놓았어요.':'선택한 분류에 옷 사진을 저장했어요.');}catch(e){$('#uploadError').textContent=e.message;}finally{uploading=false;formBusy($('#uploadForm'),false);photoEditor.setLocked(false);$('#uploadSubmit').textContent='내 옷장에 등록';}
+ e.preventDefault();if(uploading||editingPhoto||subcategories.busy)return;if(!uploadData){$('#uploadError').textContent='사진을 먼저 선택해 주세요.';return;}
+ pendingGarment??={id:crypto.randomUUID(),name:$('#garmentName').value.trim(),category:$('#garmentCategory').value,sourceUrl:$('#garmentUrl').value.trim(),features:$('#garmentFeatures').value.trim(),subcategories:uploadSubcategories.values(),image:uploadData};uploading=true;photoEditor.setLocked(true);formBusy(e.currentTarget,true);$('#uploadError').textContent='';$('#uploadSubmit').textContent='사진을 서버에 저장 중…';
+ try{const data=await api('/api/garments/'+pendingGarment.id,{method:'PUT',body:JSON.stringify(pendingGarment)});garments=[data.garment,...garments.filter(x=>x.id!==data.garment.id)];filter=data.garment.category;subcategoryFilter='';renderWardrobe();const add=$('#addAfterUpload').checked;if(add)addItem(data.garment);closet.focusCategory(data.garment.category);$('#uploadDialog').close();pendingGarment=null;toast(add?'내 옷장에 등록하고 보드에 놓았어요.':'선택한 분류에 옷 사진을 저장했어요.');}catch(e){$('#uploadError').textContent=e.message;}finally{uploading=false;formBusy($('#uploadForm'),false);photoEditor.setLocked(false);$('#uploadSubmit').textContent='내 옷장에 등록';}
 };
 for(const id of ['garmentName','garmentCategory','garmentUrl','garmentFeatures'])$('#'+id).oninput=()=>pendingGarment=null;
 $('#saveLook').onclick=()=>{if(!state.pieces.length){toast('사진을 하나 이상 놓아 주세요.');return;}if(saved.length>=100){toast('코디는 최대 100개까지 저장할 수 있어요.');return;}pendingLook=null;$('#lookName').value='나의 코디 '+(saved.length+1);$('#saveError').textContent='';$('#saveDialog').showModal();$('#lookName').select();};
@@ -144,10 +150,10 @@ $('#cloudRetry').onclick=()=>loaded?cloud.flush():connectCloud();$('#useServer')
 $('#importLegacy').onclick=async()=>{const b=$('#importLegacy');b.disabled=true;try{for(const look of legacy)await api('/api/looks/'+look.id,{method:'PUT',body:JSON.stringify(look)});try{localStorage.setItem('form-migrated-'+userId,'1')}catch{}b.hidden=true;await refreshLibrary();toast('이전 코디를 원본 기록으로 옮겼어요.')}catch(e){toast(e.message)}finally{b.disabled=false}};
 window.addEventListener('beforeunload',e=>{if(cloud.dirty||saving||uploading||closet.busy||boardControls.dragging){e.preventDefault();e.returnValue='';}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)cloud.flush();else refreshLibrary().catch(()=>{})});
-for(const [key,label] of [['all','전체'],...Object.entries(categories)]){const b=document.createElement('button');b.dataset.filter=key;b.textContent=label;b.onclick=()=>{filter=key;renderWardrobe()};$('#categoryFilters').append(b);}
-const closet=createCloset({getGarments:()=>garments,openUpload,toast,onDelete:async item=>{await cloud.flush();if(cloud.dirty)throw new Error('현재 보드 저장을 먼저 완료해 주세요.');await api('/api/garments/'+item.id+'?permanent=1',{method:'DELETE'});garments=garments.filter(g=>g.id!==item.id);imageCache.delete(item.image);renderWardrobe();renderBoard();},onAdd:item=>{addItem(item);showScreen('studio');},onUpdate:item=>{garments=garments.map(g=>g.id===item.id?item:g);let recategorized=false;for(const piece of state.pieces)if(piece.source==='wardrobe'&&piece.itemId===item.id&&piece.category!==item.category){piece.category=item.category;recategorized=true;}renderWardrobe();renderBoard();if(recategorized)changed();}});
+for(const [key,label] of [['all','전체'],...Object.entries(categories)]){const b=document.createElement('button');b.dataset.filter=key;b.textContent=label;b.onclick=()=>{filter=key;subcategoryFilter='';renderWardrobe()};$('#categoryFilters').append(b);}
+const closet=createCloset({subcategories,getGarments:()=>garments,openUpload,toast,onDelete:async item=>{await cloud.flush();if(cloud.dirty)throw new Error('현재 보드 저장을 먼저 완료해 주세요.');await api('/api/garments/'+item.id+'?permanent=1',{method:'DELETE'});garments=garments.filter(g=>g.id!==item.id);imageCache.delete(item.image);renderWardrobe();renderBoard();},onAdd:item=>{addItem(item);showScreen('studio');},onUpdate:item=>{garments=garments.map(g=>g.id===item.id?item:g);let recategorized=false;for(const piece of state.pieces)if(piece.source==='wardrobe'&&piece.itemId===item.id&&piece.category!==item.category){piece.category=item.category;recategorized=true;}renderWardrobe();renderBoard();if(recategorized)changed();}});
 const boardControls=createBoardControls({board:$('#board'),getSelected:selected,getElement:p=>$('#pieces [data-key="'+p.key+'"]'),onUpdate:p=>{positionElement($('#pieces [data-key="'+p.key+'"]'),p);renderSelection();},onCommit:changed});
-createRecommender({getGarments:()=>garments,getSelected:selected,apply:ids=>{
+createRecommender({getGarments:()=>garments,getSelected:()=>selected()||state.pieces.find(p=>p.key===lastSelectedKey),apply:ids=>{
  const items=ids.map(id=>garments.find(g=>g.id===id&&!g.archived));
  if(items.some(item=>!item)){toast('옷장이 변경되었어요. 다시 추천받아 주세요.');return;}
  if(state.pieces.length&&!confirm('현재 보드를 추천 코디로 바꿀까요? 보관하려면 먼저 코디를 저장해 주세요.'))return;
@@ -155,4 +161,12 @@ createRecommender({getGarments:()=>garments,getSelected:selected,apply:ids=>{
  board.pieces=items.map(item=>({key:crypto.randomUUID(),source:'wardrobe',itemId:item.id,category:item.category,...placements[item.category]}));
  installBoard(board);changed();toast('추천 코디를 보드에 놓았어요.');
 }});
+// Keep selection while using its controls; other clicks only clear the highlight.
+document.addEventListener('pointerdown',e=>{
+ if(e.button!==0||boardControls.dragging||!activeKey)return;
+ if(!e.target.closest('.piece,.piece-controls,#selectionControls,#outfitList,dialog'))selectPiece(null);
+});
+document.addEventListener('keydown',e=>{
+ if(e.key==='Escape'&&!document.querySelector('dialog[open]')&&!boardControls.dragging)selectPiece(null);
+});
 renderBoard();renderWardrobe();connectCloud();

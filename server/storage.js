@@ -1,3 +1,4 @@
+import {validateSubcategories,changeSubcategory} from './subcategories.js';
 import {validBoard,sanitizeBoard,categories} from '../public/board-state.js';
 import {validState} from '../public/catalog.js';
 const MAX_BYTES=2300000, MAX_LOOKS=100;
@@ -40,7 +41,7 @@ function garmentMetadata(body){
  if(body.features!=null&&(typeof body.features!=='string'||body.features.length>240))fail(400,'옷의 특징은 240자 이내로 입력해 주세요.');
  return {name:body.name.trim(),category:body.category,sourceUrl,features:body.features?.trim()||''};
 }
-function garmentFromRow(row){return {id:row.id,name:row.name,category:row.category,sourceUrl:row.source_url,features:row.features||'',archived:!!row.archived,image:`/api/garments/${row.id}/image`,source:'wardrobe'};}
+function garmentFromRow(row){return {id:row.id,name:row.name,category:row.category,sourceUrl:row.source_url,features:row.features||'',subcategories:row.subcategories||[],archived:!!row.archived,image:`/api/garments/${row.id}/image`,source:'wardrobe'};}
 function garmentBytes(image){
  if(typeof image!=='string')fail(400,'옷 사진을 선택해 주세요.');
  const match=image.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/);
@@ -68,8 +69,11 @@ export async function handleStorage(request,env,user){
     const list=await db.prepare('SELECT * FROM looks WHERE user_id = ? ORDER BY created_at DESC, id DESC').bind(user).all();
     const garments=await db.prepare('SELECT * FROM garments WHERE user_id = ? ORDER BY created_at DESC').bind(user).all();
     const draft=await db.prepare('SELECT state, revision FROM drafts WHERE user_id = ?').bind(user).first();
-    return json({userId:user,garments:garments.results.map(garmentFromRow),looks:list.results.map(lookFromRow),draft:draft?draft.state:null,revision:draft?.revision||0,limit:MAX_LOOKS});
+    const subcategories=await db.prepare('SELECT id,category,name FROM subcategories WHERE user_id = ? ORDER BY category,name').bind(user).all();
+    return json({subcategories:subcategories.results,userId:user,garments:garments.results.map(garmentFromRow),looks:list.results.map(lookFromRow),draft:draft?draft.state:null,revision:draft?.revision||0,limit:MAX_LOOKS});
   }
+  const subcategoryRoute=path.match(/^\/api\/subcategories\/([A-Za-z0-9_-]{1,100})$/);
+  if(subcategoryRoute)return json(await changeSubcategory(db,user,subcategoryRoute[1],request.method,request.method==='PUT'?await readBody(request,4096):null));
   if(path==='/api/draft'&&request.method==='PUT'){
     const body=await readBody(request),state=cleanState(body?.state);
     await authorizeBoard(db,user,state);
@@ -100,7 +104,8 @@ export async function handleStorage(request,env,user){
       if(!body||typeof body!=='object'||Array.isArray(body))fail(400,'수정 내용을 확인해 주세요.');
       if(body.archived!==undefined&&typeof body.archived!=='boolean')fail(400,'보관 상태가 올바르지 않습니다.');
       const data=garmentMetadata({name:body.name??found.name,category:body.category??found.category,sourceUrl:body.sourceUrl??found.source_url,features:body.features??found.features});
-      const result=await db.prepare('UPDATE garments SET name = ?, category = ?, source_url = ?, features = ?, archived = ? WHERE user_id = ? AND id = ? RETURNING *').bind(data.name,data.category,data.sourceUrl,data.features,body.archived===undefined?found.archived:Number(body.archived),user,id).all();
+      const subcategories=await validateSubcategories(db,user,data.category,body.subcategories===undefined?(data.category===found.category?found.subcategories:[]):body.subcategories);
+      const result=await db.prepare('UPDATE garments SET name = ?, category = ?, source_url = ?, features = ?, subcategories = ?, archived = ? WHERE user_id = ? AND id = ? RETURNING *').bind(data.name,data.category,data.sourceUrl,data.features,JSON.stringify(subcategories),body.archived===undefined?found.archived:Number(body.archived),user,id).all();
       return json({garment:garmentFromRow(result.results[0])});
     }
     if(request.method==='DELETE'){
@@ -122,12 +127,13 @@ export async function handleStorage(request,env,user){
     if(found)return json({garment:garmentFromRow(found),existing:true});
     const body=await readBody(request);
     const metadata=garmentMetadata(body),sourceUrl=metadata.sourceUrl;
+    const subcategories=await validateSubcategories(db,user,metadata.category,body.subcategories);
     const {bytes,mime}=garmentBytes(body.image);const key=`${user}/garments/${crypto.randomUUID()}`;
     await env.BUCKET.put(key,bytes,{httpMetadata:{contentType:mime}});
     let inserted;
-    try{inserted=await db.prepare(`INSERT INTO garments (user_id,id,name,category,source_url,features,image_key,mime,archived,created_at)
-      SELECT ?,?,?,?,?,?,?,?,0,? WHERE (SELECT COUNT(*) FROM garments WHERE user_id = ?) < 200
-      ON CONFLICT(user_id,id) DO NOTHING RETURNING *`).bind(user,id,body.name.trim(),body.category,sourceUrl,metadata.features,key,mime,new Date().toISOString(),user).all();}
+    try{inserted=await db.prepare(`INSERT INTO garments (user_id,id,name,category,source_url,features,subcategories,image_key,mime,archived,created_at)
+      SELECT ?,?,?,?,?,?,?,?,?,0,? WHERE (SELECT COUNT(*) FROM garments WHERE user_id = ?) < 200
+      ON CONFLICT(user_id,id) DO NOTHING RETURNING *`).bind(user,id,body.name.trim(),body.category,sourceUrl,metadata.features,JSON.stringify(subcategories),key,mime,new Date().toISOString(),user).all();}
     catch(error){await env.BUCKET.delete(key).catch(()=>{});throw error;}
     if(!inserted.results.length){await env.BUCKET.delete(key).catch(()=>{});const retry=await db.prepare('SELECT * FROM garments WHERE user_id = ? AND id = ?').bind(user,id).first();if(retry)return json({garment:garmentFromRow(retry),existing:true});fail(409,'옷 사진은 계정당 최대 200개까지 등록할 수 있어요.');}
     return json({garment:garmentFromRow(inserted.results[0])},201);

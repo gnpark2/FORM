@@ -1,5 +1,5 @@
 import {PGlite} from '@electric-sql/pglite';
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 import {userDatabase} from '../server/database.js';
 import {storageTransaction} from '../server/runtime.js';
 import {handleApi} from '../server/recommend.js';
@@ -16,7 +16,7 @@ export async function setup(t) {
     GRANT SELECT,INSERT,DELETE ON storage.objects TO authenticated;
     CREATE FUNCTION storage.foldername(name text) RETURNS text[] LANGUAGE sql IMMUTABLE AS $$ SELECT string_to_array(name,'/') $$;
   `);
-  await sql.exec(await readFile('supabase/migrations/202610220001_form.sql','utf8'));
+  for(const name of (await readdir('supabase/migrations')).filter(n=>n.endsWith('.sql')).sort())await sql.exec(await readFile('supabase/migrations/'+name,'utf8'));
   await sql.query('INSERT INTO auth.users VALUES ($1),($2)',Object.values(ids));
   let tail = Promise.resolve();
   const pool = {async connect() {

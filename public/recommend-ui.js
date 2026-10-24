@@ -39,7 +39,7 @@ export function createRecommender({getGarments, getSelected, apply}) {
     <p>내 옷장에서 조합을 추천받고 보드에 바로 놓아보세요. AI는 옷 사진 대신 입력한 이름·특징을 참고합니다.</p>
     <form id="recommendForm"><label for="recommendPrompt">원하는 분위기나 상황</label>
     <input id="recommendPrompt" maxlength="400" required placeholder="예: 아이보리 상의와 어울리는 가을 데이트 코디">
-    <label class="check-label"><input type="checkbox" id="recommendAnchor"> 보드에서 선택한 내 옷을 꼭 포함하기</label>
+    <label class="check-label"><input type="checkbox" id="recommendAnchor"> 보드에서 최근 선택한 내 옷 포함<span id="recommendAnchorName"></span></label>
     <button class="btn primary" id="recommendSubmit">코디 추천받기 ✦</button></form>
     <p id="recommendStatus" role="status" aria-live="polite">AI는 하루 5회까지 · 같은 조건의 결과는 재사용해요.</p>
     <div id="recommendResults" class="recommend-results"></div>`;
