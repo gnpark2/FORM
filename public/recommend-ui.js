@@ -60,7 +60,7 @@ export function createRecommender({getGarments, getSelected, apply}) {
       for (const look of data.looks) {
         const card = document.createElement('article'), title = document.createElement('h3'), images = document.createElement('div'), reason = document.createElement('p'), button = document.createElement('button');
         card.className = 'recommend-card'; title.textContent = look.title; reason.textContent = look.reason; images.className = 'recommend-images';
-        for (const id of look.ids) { const item = getGarments().find(g => g.id === id); if (!item) continue; const img = document.createElement('img'); img.src = item.image; img.alt = item.name; img.title = item.name; images.append(img); }
+        for (const id of look.ids) { const item = getGarments().find(g => g.id === id); if (!item) continue; const img = document.createElement('img'); img.src = item.thumbnail || item.image; img.loading = 'lazy'; img.alt = item.name; img.title = item.name; images.append(img); }
         button.className = 'btn secondary'; button.textContent = '보드에 적용';
         button.onclick = () => apply(look.ids);
         card.append(title, images, reason, button); $('#recommendResults').append(card);

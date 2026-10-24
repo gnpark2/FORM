@@ -1,3 +1,4 @@
+import {privateImage} from './image-response.js';
 import {validateSubcategories,changeSubcategory} from './subcategories.js';
 import {validBoard,sanitizeBoard,categories} from '../public/board-state.js';
 import {validState} from '../public/catalog.js';
@@ -41,13 +42,13 @@ function garmentMetadata(body){
  if(body.features!=null&&(typeof body.features!=='string'||body.features.length>240))fail(400,'옷의 특징은 240자 이내로 입력해 주세요.');
  return {name:body.name.trim(),category:body.category,sourceUrl,features:body.features?.trim()||''};
 }
-function garmentFromRow(row){return {id:row.id,name:row.name,category:row.category,sourceUrl:row.source_url,features:row.features||'',subcategories:row.subcategories||[],archived:!!row.archived,image:`/api/garments/${row.id}/image`,source:'wardrobe'};}
-function garmentBytes(image){
+function garmentFromRow(row){return {id:row.id,name:row.name,category:row.category,sourceUrl:row.source_url,features:row.features||'',subcategories:row.subcategories||[],archived:!!row.archived,hasThumbnail:!!row.thumbnail_key,thumbnail:`/api/garments/${row.id}/${row.thumbnail_key?'thumbnail':'image'}`,image:`/api/garments/${row.id}/image`,source:'wardrobe'};}
+function garmentBytes(image,maxBytes=1600000){
  if(typeof image!=='string')fail(400,'옷 사진을 선택해 주세요.');
  const match=image.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/);
  if(!match)fail(400,'JPG, PNG, WebP 사진만 지원합니다.');
  let bytes;try{bytes=Uint8Array.from(atob(match[2]),c=>c.charCodeAt(0));}catch{fail(400,'사진이 올바르지 않습니다.');}
- if(bytes.length>1600000)fail(413,'사진 크기를 줄여 다시 등록해 주세요.');
+ if(bytes.length>maxBytes)fail(413,'사진 크기를 줄여 다시 등록해 주세요.');
  const png=bytes.length>24&&[137,80,78,71,13,10,26,10].every((v,i)=>bytes[i]===v);
  const jpeg=bytes.length>4&&bytes[0]===255&&bytes[1]===216&&bytes.at(-2)===255&&bytes.at(-1)===217;
  const webp=bytes.length>12&&new TextDecoder().decode(bytes.slice(0,4))==='RIFF'&&new TextDecoder().decode(bytes.slice(8,12))==='WEBP';
@@ -88,15 +89,24 @@ export async function handleStorage(request,env,user){
     if(!revision){const current=await db.prepare('SELECT state,revision FROM drafts WHERE user_id = ?').bind(user).first();fail(409,'다른 기기에서 편집한 코디가 있습니다.',{revision:current?.revision||0,draft:current?current.state:null});}
     return json({revision});
   }
-  const garmentRoute=path.match(/^\/api\/garments\/([A-Za-z0-9_-]{1,100})(\/image)?$/);
+  const garmentRoute=path.match(/^\/api\/garments\/([A-Za-z0-9_-]{1,100})(\/(?:image|thumbnail))?$/);
   if(garmentRoute){
     const id=garmentRoute[1];
     const found=await db.prepare('SELECT * FROM garments WHERE user_id = ? AND id = ?').bind(user,id).first();
     if(garmentRoute[2]){
-      if(request.method!=='GET')fail(405,'지원하지 않는 요청입니다.');
       if(!found)fail(404,'사진이 없습니다.');
-      const object=await env.BUCKET.get(found.image_key);if(!object)fail(404,'사진이 없습니다.');
-      return new Response(object.body,{headers:{'Content-Type':found.mime,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+      const thumbnailRoute=garmentRoute[2]==='/thumbnail';
+      if(thumbnailRoute&&request.method==='PUT'){
+        if(found.thumbnail_key)return json({garment:garmentFromRow(found),existing:true});
+        const body=await readBody(request,170000),thumbnail=garmentBytes(body?.thumbnail,120000);
+        const key=`${user}/thumbnails/${crypto.randomUUID()}`;
+        await env.BUCKET.put(key,thumbnail.bytes,{httpMetadata:{contentType:thumbnail.mime}});
+        const result=await db.prepare('UPDATE garments SET thumbnail_key = ?, thumbnail_mime = ? WHERE user_id = ? AND id = ? RETURNING *').bind(key,thumbnail.mime,user,id).all();
+        return json({garment:garmentFromRow(result.results[0])});
+      }
+      if(request.method!=='GET')fail(405,'지원하지 않는 요청입니다.');
+      const small=thumbnailRoute&&found.thumbnail_key;
+      return await privateImage(request,env.BUCKET,small?found.thumbnail_key:found.image_key,small?found.thumbnail_mime:found.mime);
     }
     if(request.method==='PATCH'){
       if(!found)fail(404,'옷을 찾을 수 없습니다.');
@@ -115,9 +125,9 @@ export async function handleStorage(request,env,user){
         const removed=await db.prepare(`DELETE FROM garments WHERE user_id = ? AND id = ?
           AND NOT EXISTS (SELECT 1 FROM looks l, jsonb_array_elements(COALESCE(l.state->'pieces','[]'::jsonb)) p(value) WHERE l.user_id = ? AND p.value->>'source' = 'wardrobe' AND p.value->>'itemId' = ?)
           AND NOT EXISTS (SELECT 1 FROM drafts d, jsonb_array_elements(COALESCE(d.state->'pieces','[]'::jsonb)) p(value) WHERE d.user_id = ? AND p.value->>'source' = 'wardrobe' AND p.value->>'itemId' = ?)
-          RETURNING image_key`).bind(user,id,user,id,user,id).all();
+          RETURNING image_key,thumbnail_key`).bind(user,id,user,id,user,id).all();
         if(!removed.results.length)fail(409,'이 옷을 사용하는 현재 보드 또는 저장한 코디가 있어요. 현재 보드에서 옷을 빼고, 해당 저장 코디를 삭제한 뒤 다시 시도해 주세요. 코디를 유지하려면 옷장에서 숨기기를 사용하세요.');
-        await env.BUCKET.delete(removed.results[0].image_key).catch(()=>console.error('Garment image cleanup failed'));
+        for(const key of [removed.results[0].image_key,removed.results[0].thumbnail_key].filter(Boolean))await env.BUCKET.delete(key).catch(()=>console.error('Garment image cleanup failed'));
         return json({deleted:true});
       }
       await db.prepare('UPDATE garments SET archived = 1 WHERE user_id = ? AND id = ?').bind(user,id).all();
@@ -128,14 +138,17 @@ export async function handleStorage(request,env,user){
     const body=await readBody(request);
     const metadata=garmentMetadata(body),sourceUrl=metadata.sourceUrl;
     const subcategories=await validateSubcategories(db,user,metadata.category,body.subcategories);
+    const thumbnail=body.thumbnail===undefined?null:garmentBytes(body.thumbnail,120000);
+    const thumbnailKey=thumbnail?`${user}/thumbnails/${crypto.randomUUID()}`:null;
     const {bytes,mime}=garmentBytes(body.image);const key=`${user}/garments/${crypto.randomUUID()}`;
     await env.BUCKET.put(key,bytes,{httpMetadata:{contentType:mime}});
+    if(thumbnail)await env.BUCKET.put(thumbnailKey,thumbnail.bytes,{httpMetadata:{contentType:thumbnail.mime}});
     let inserted;
-    try{inserted=await db.prepare(`INSERT INTO garments (user_id,id,name,category,source_url,features,subcategories,image_key,mime,archived,created_at)
-      SELECT ?,?,?,?,?,?,?,?,?,0,? WHERE (SELECT COUNT(*) FROM garments WHERE user_id = ?) < 200
-      ON CONFLICT(user_id,id) DO NOTHING RETURNING *`).bind(user,id,body.name.trim(),body.category,sourceUrl,metadata.features,JSON.stringify(subcategories),key,mime,new Date().toISOString(),user).all();}
-    catch(error){await env.BUCKET.delete(key).catch(()=>{});throw error;}
-    if(!inserted.results.length){await env.BUCKET.delete(key).catch(()=>{});const retry=await db.prepare('SELECT * FROM garments WHERE user_id = ? AND id = ?').bind(user,id).first();if(retry)return json({garment:garmentFromRow(retry),existing:true});fail(409,'옷 사진은 계정당 최대 200개까지 등록할 수 있어요.');}
+    try{inserted=await db.prepare(`INSERT INTO garments (user_id,id,name,category,source_url,features,subcategories,image_key,mime,thumbnail_key,thumbnail_mime,archived,created_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,0,? WHERE (SELECT COUNT(*) FROM garments WHERE user_id = ?) < 200
+      ON CONFLICT(user_id,id) DO NOTHING RETURNING *`).bind(user,id,body.name.trim(),body.category,sourceUrl,metadata.features,JSON.stringify(subcategories),key,mime,thumbnailKey,thumbnail?.mime||null,new Date().toISOString(),user).all();}
+    catch(error){await env.BUCKET.delete(key).catch(()=>{});if(thumbnailKey)await env.BUCKET.delete(thumbnailKey).catch(()=>{});throw error;}
+    if(!inserted.results.length){await env.BUCKET.delete(key).catch(()=>{});if(thumbnailKey)await env.BUCKET.delete(thumbnailKey).catch(()=>{});const retry=await db.prepare('SELECT * FROM garments WHERE user_id = ? AND id = ?').bind(user,id).first();if(retry)return json({garment:garmentFromRow(retry),existing:true});fail(409,'옷 사진은 계정당 최대 200개까지 등록할 수 있어요.');}
     return json({garment:garmentFromRow(inserted.results[0])},201);
   }
   const match=path.match(/^\/api\/looks\/([A-Za-z0-9_-]{1,100})(\/image)?$/);
@@ -144,8 +157,7 @@ export async function handleStorage(request,env,user){
   const existing=await db.prepare('SELECT * FROM looks WHERE user_id = ? AND id = ?').bind(user,id).first();
   if(imageRoute&&request.method==='GET'){
     if(!existing?.image_key)fail(404,'미리보기가 없습니다.');
-    const object=await env.BUCKET.get(existing.image_key);if(!object)fail(404,'미리보기가 없습니다.');
-    return new Response(object.body,{headers:{'Content-Type':'image/jpeg','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+    return await privateImage(request,env.BUCKET,existing.image_key,'image/jpeg');
   }
   if(imageRoute)fail(405,'지원하지 않는 요청입니다.');
   if(request.method==='DELETE'){

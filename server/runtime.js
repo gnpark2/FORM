@@ -54,7 +54,8 @@ export function createRuntime(request, env = process.env) {
     },
     finish(response) {
       const headers = new Headers(response.headers);
-      headers.set('Cache-Control', 'private, no-store');
+      const revalidatingImage=[200,304].includes(response.status)&&headers.has('ETag')&&headers.get('Cache-Control')==='private, no-cache';
+      headers.set('Cache-Control', revalidatingImage?'private, no-cache':'private, no-store');
       headers.set('Vary', 'Cookie');
       for (const {name, value, options} of pending.values()) headers.append('Set-Cookie', serializeCookieHeader(name, value, options));
       return new Response(response.body, {status: response.status, headers});
