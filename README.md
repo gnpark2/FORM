@@ -2,6 +2,8 @@
 
 옷 사진을 등록하고 보드에서 조합·크기·회전을 편집한 뒤 저장하는 개인 옷장 서비스입니다.
 
+https://form-outfit-studio.vercel.app/
+
 ## 구성
 
 - Next.js 서버의 **Node.js runtime**이 Google 인증 확인, 옷장/코디 CRUD, 소유권 검사, AI 추천을 처리합니다.
